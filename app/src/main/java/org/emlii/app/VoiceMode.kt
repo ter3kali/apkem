@@ -263,12 +263,23 @@ private val BASE: Array<FloatArray> = run {
     arrayOf(xs, ys, zs)
 }
 
+// neon purple -> neon blue -> ash grey -> back to purple
+private val STOPS = listOf(Color(176, 38, 255), Color(40, 120, 255), Color(176, 182, 190))
+
+private fun palette(p: Float): Color {
+    val x = (((p % 1f) + 1f) % 1f) * 3f
+    val k = x.toInt()
+    val f = x - k
+    val sm = f * f * (3f - 2f * f)
+    return lerp(STOPS[k % 3], STOPS[(k + 1) % 3], sm)
+}
+
 private class OrbAnim {
     var tick by mutableStateOf(0L)
     var level = 0f
     var spin = 1f
-    var hue = 270f          // current colour (0..360), drifts continuously
-    var morph = 0f          // time for the wave field; runs faster with more energy
+    var phase = 0f          // position in the purple -> blue -> ash colour loop (0..1)
+    var morph = 0f          // time for the surface ripples
     var ang = 0f
     val front = FloatArray(PER * 2)
     val back = FloatArray(PER * 2)
@@ -280,18 +291,19 @@ private class OrbAnim {
     fun update(dt: Float, state: String, mic: Float) {
         val sm = { k: Float -> 1f - (1f - k).pow(dt * 30f) }
         val tt = morph
-        val pulse = (0.5f + 0.5f * sin(tt * 5f)).coerceIn(0f, 1f) * 0.3f
+        val pulse = (0.5f + 0.5f * sin(tt * 4f)).coerceIn(0f, 1f) * 0.15f
+        // deliberately calm: sound only nudges the orb
         val target = when (state) {
-            "listening" -> max(0.06f, mic)
-            "speaking" -> 0.30f + 0.22f * sin(tt * 4.5f) * sin(tt * 1.7f) + pulse
-            "thinking" -> 0.20f + 0.10f * sin(tt * 3f)
+            "listening" -> max(0.05f, mic * 0.5f)
+            "speaking" -> 0.18f + 0.10f * sin(tt * 3.5f) * sin(tt * 1.4f) + pulse
+            "thinking" -> 0.12f + 0.05f * sin(tt * 2.5f)
             else -> 0.03f
         }
-        level += (target - level) * sm(0.2f)
-        spin += ((if (state == "thinking") 2.6f else 1f) - spin) * sm(0.10f)
-        morph += dt * (0.5f + 1.6f * level) * (0.7f + 0.4f * spin)
+        level += (target - level) * sm(0.10f)
+        spin += ((if (state == "thinking") 2.2f else 1f) - spin) * sm(0.08f)
+        morph += dt * (0.45f + 0.6f * level) * (0.7f + 0.3f * spin)
         ang += dt * 0.22f * spin
-        hue = (hue + dt * (16f + 34f * level) * (0.6f + 0.4f * spin)) % 360f
+        phase = (phase + dt * 0.04f * (0.8f + 0.4f * spin)) % 1f
     }
 }
 
@@ -299,10 +311,10 @@ private fun DrawScope.drawOrb(a: OrbAnim) {
     val cx = size.width / 2f
     val cy = size.height / 2f
     val c = Offset(cx, cy)
-    val r = min(size.width, size.height) * 0.30f
+    val r = min(size.width, size.height) * 0.28f
     val lv = a.level
     val dens = density
-    val amp = 0.16f + 0.60f * lv
+    val amp = 0.045f + 0.09f * lv           // small: the orb stays a sphere with gentle ripples
     val m = a.morph
     val ca = cos(a.ang)
     val sa = sin(a.ang)
@@ -311,14 +323,14 @@ private fun DrawScope.drawOrb(a: OrbAnim) {
     val st = sin(tilt)
 
     // faint glow in the current colour
-    val glow = Color.hsv(a.hue, 0.7f, 1f)
+    val glow = palette(a.phase)
     drawCircle(
         brush = Brush.radialGradient(
-            colors = listOf(glow.copy(alpha = 0.10f + 0.18f * lv), Color.Transparent),
+            colors = listOf(glow.copy(alpha = 0.12f + 0.10f * lv), Color.Transparent),
             center = c,
-            radius = r * 2.2f
+            radius = r * 2.0f
         ),
-        radius = r * 2.2f,
+        radius = r * 2.0f,
         center = c
     )
 
@@ -339,12 +351,12 @@ private fun DrawScope.drawOrb(a: OrbAnim) {
             val x = bx[base + j]
             val y = by[base + j]
             val z = bz[base + j]
-            // smooth lobes + a few sharper ferrofluid peaks
+            // soft ripples over the surface
             val d = 0.55f * sin(3f * x + 1.3f * m) * sin(2.2f * y - 0.9f * m) +
                 0.40f * sin(4f * z + 0.8f * m + 2f * x) +
                 0.30f * sin(5f * (x + y) - 1.1f * m)
             val sp = max(0f, sin(6f * x - 4f * z + 1.7f * m) * sin(5f * y + 1.2f * m))
-            val rad = max(0.15f, 1f + amp * (d + 1.4f * sp * sp))
+            val rad = max(0.5f, 1f + amp * (d + 0.6f * sp * sp))
             val px0 = x * rad
             val py0 = y * rad
             val pz0 = z * rad
@@ -364,11 +376,11 @@ private fun DrawScope.drawOrb(a: OrbAnim) {
                 back[nb++] = sy
             }
         }
-        // each ring is a slightly different hue, so colour flows across the surface as it drifts
-        val col = Color.hsv((a.hue + i * 1.3f) % 360f, 0.55f, 1f)
-        paint.color = col.copy(alpha = 0.30f).toArgb()
+        // colour flows across the rings as the loop turns
+        val col = palette(a.phase + i * 0.006f)
+        paint.color = col.copy(alpha = 0.32f).toArgb()
         canvas.drawPoints(back, 0, nb, paint)
-        paint.color = col.copy(alpha = 0.60f).toArgb()
+        paint.color = col.copy(alpha = 0.65f).toArgb()
         canvas.drawPoints(front, 0, nf, paint)
     }
 }
